@@ -179,7 +179,86 @@ def structured_search_tool(
     LLM Usage Note:
     This tool is ideal for filtered browsing, purchase history analysis, or category breakdowns.
     """
-    pass
+    # Build enriched product DataFrame with department and aisle names
+    df = products.merge(departments, on="department_id", how="left")
+    df = df.merge(aisles, on="aisle_id", how="left")
+
+    if history_only:
+        # Get current user ID
+        user_id = get_user_id()
+        if user_id is None:
+            return [{"error": "No user ID set. Please set user ID via set_user_id()."}]
+
+        # Get user's orders and merge with prior purchases
+        user_orders = orders[orders["user_id"] == user_id]
+        user_prior = prior.merge(user_orders[["order_id"]], on="order_id", how="inner")
+
+        # Aggregate purchase statistics per product
+        user_stats = (
+            user_prior.groupby("product_id")
+            .agg(
+                count=("product_id", "size"),
+                reordered=("reordered", "sum"),
+                add_to_cart_order=("add_to_cart_order", "mean"),
+            )
+            .reset_index()
+        )
+
+        # Join with enriched product info
+        df = df.merge(user_stats, on="product_id", how="inner")
+
+        # Apply reordered filter
+        if reordered is not None:
+            if reordered:
+                df = df[df["reordered"] > 0]
+            else:
+                df = df[df["reordered"] == 0]
+
+        # Apply min_orders filter
+        if min_orders is not None:
+            df = df[df["count"] >= min_orders]
+
+    # Apply product_name filter (case-insensitive substring match)
+    if product_name is not None:
+        df = df[df["product_name"].str.lower().str.contains(product_name.lower(), na=False)]
+
+    # Apply department filter (exact match)
+    if department is not None:
+        df = df[df["department"] == department]
+
+    # Apply aisle filter (lowercased match)
+    if aisle is not None:
+        df = df[df["aisle"].str.lower() == aisle.lower()]
+
+    # Handle group_by aggregation
+    if group_by is not None:
+        if group_by == "department":
+            result = df.groupby("department").size().reset_index(name="num_products")
+        elif group_by == "aisle":
+            result = df.groupby("aisle").size().reset_index(name="num_products")
+        else:
+            return []
+        return result.to_dict(orient="records")
+
+    # Apply ordering (only meaningful for history_only, but allow anyway)
+    if order_by is not None and order_by in df.columns:
+        df = df.sort_values(by=order_by, ascending=ascending)
+
+    # Apply top_k limit
+    if top_k is not None:
+        df = df.head(top_k)
+
+    # Select output columns
+    base_cols = ["product_id", "product_name", "aisle", "department"]
+    if history_only:
+        output_cols = base_cols + ["count", "reordered", "add_to_cart_order"]
+    else:
+        output_cols = base_cols
+
+    # Filter to existing columns only
+    output_cols = [c for c in output_cols if c in df.columns]
+
+    return df[output_cols].to_dict(orient="records")
 
 
 # TODO
@@ -234,7 +313,18 @@ _vector_store = None
 
 
 def get_vector_store():
-    pass
+    """Lazily initialize and return the Chroma vector store with HuggingFace embeddings."""
+    global _embeddings, _vector_store
+    if _vector_store is None:
+        _embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+        _vector_store = Chroma(
+            collection_name=CHROMA_COLLECTION,
+            embedding_function=_embeddings,
+            persist_directory=CHROMA_DIR,
+        )
+    return _vector_store
 
 
 def make_query_prompt(query: str) -> str:
@@ -284,7 +374,27 @@ def search_products(query: str, top_k: int = 5):
     ]
     ```
     """
-    pass
+    # Wrap the query for embedding
+    query_prompt = make_query_prompt(query)
+    
+    # Get the vector store instance
+    vector_store = get_vector_store()
+    
+    # Perform similarity search
+    results = vector_store.similarity_search(query_prompt, k=top_k)
+    
+    # Format results as list of dicts
+    output = []
+    for doc in results:
+        output.append({
+            "product_id": doc.metadata.get("product_id"),
+            "product_name": doc.metadata.get("product_name"),
+            "aisle": doc.metadata.get("aisle"),
+            "department": doc.metadata.get("department"),
+            "text": doc.page_content,
+        })
+    
+    return output
 
 
 # TODO
@@ -343,7 +453,21 @@ def search_tool(query: str) -> str:
     search_tool("something high protein for breakfast")
     ```
     """
-    pass
+    results = search_products(query)
+    
+    if not results:
+        return "No products found matching your search."
+    
+    lines = []
+    for item in results:
+        lines.append(
+            f"- {item['product_name']} (ID: {item['product_id']})\n"
+            f"  Aisle: {item['aisle']}\n"
+            f"  Department: {item['department']}\n"
+            f"  Details: {item['text']}"
+        )
+    
+    return "\n".join(lines)
 
 
 # ---- UPDATED: Cart tools with quantity support ----
@@ -495,7 +619,10 @@ def create_tool_node_with_fallback(tools: list) -> ToolNode:
     Returns:
     - ToolNode: A LangGraph-compatible tool node with error fallback logic.
     """
-    pass
+    return ToolNode(tools).with_fallbacks(
+        [RunnableLambda(handle_tool_error)],
+        exception_key="error"
+    )
 
 
 __all__ = [
