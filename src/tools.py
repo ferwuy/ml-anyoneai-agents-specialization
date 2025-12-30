@@ -180,8 +180,18 @@ def structured_search_tool(
     This tool is ideal for filtered browsing, purchase history analysis, or category breakdowns.
     """
     # Build enriched product DataFrame with department and aisle names
-    df = products.merge(departments, on="department_id", how="left")
-    df = df.merge(aisles, on="aisle_id", how="left")
+    # Ensure merge keys have consistent types
+    products_df = products.copy()
+    departments_df = departments.copy()
+    aisles_df = aisles.copy()
+    
+    products_df["department_id"] = pd.to_numeric(products_df["department_id"], errors="coerce")
+    products_df["aisle_id"] = pd.to_numeric(products_df["aisle_id"], errors="coerce")
+    departments_df["department_id"] = pd.to_numeric(departments_df["department_id"], errors="coerce")
+    aisles_df["aisle_id"] = pd.to_numeric(aisles_df["aisle_id"], errors="coerce")
+    
+    df = products_df.merge(departments_df, on="department_id", how="left")
+    df = df.merge(aisles_df, on="aisle_id", how="left")
 
     if history_only:
         # Get current user ID
