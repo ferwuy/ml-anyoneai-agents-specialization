@@ -327,7 +327,9 @@ def get_vector_store():
     global _embeddings, _vector_store
     if _vector_store is None:
         _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+            model_name="mixedbread-ai/mxbai-embed-large-v1",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
         )
         _vector_store = Chroma(
             collection_name=CHROMA_COLLECTION,
